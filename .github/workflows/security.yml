@@ -25,13 +25,24 @@ jobs:
       - run: semgrep scan --config auto
       
     gitleaks:
-      name: gitleaks
       runs-on: ubuntu-latest
       steps:
         - uses: actions/checkout@v4
           with:
             fetch-depth: 0
-        - uses: gitleaks/gitleaks-action@v2
-          with:
-            args: detect --source="." --no-banner
+            lfs: true
+  
+        - name: Install Gitleaks
+          run: |
+            curl -sSfL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_$(uname -s)_$(uname -m).tar.gz \
+            | tar -xz gitleaks
+            sudo mv gitleaks /usr/local/bin/gitleaks
+  
+        - name: Scan full history
+          run: |
+            gitleaks detect \
+              --source "." \
+              --log-opts="--all --full-history" \
+              --redact \
+              --exit-code 1
 
