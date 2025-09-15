@@ -6,90 +6,12 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:
-
-# Needed if you enable dependency-snapshot below
-permissions:
-  contents: write
-
-concurrency:
-  group: sbom-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
-  sbom-repo:
-    name: SBOM for repository (files)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # CycloneDX JSON
-      - name: Generate SBOM (repo, CycloneDX)
-        uses: anchore/sbom-action@v0
-        with:
-          path: .
-          format: cyclonedx-json
-          output-file: sbom-repo-cyclonedx.json
-          upload-artifact: true
-          # set to true if you want to send to GitHub Dependency Graph
-          dependency-snapshot: true
-
-      # SPDX JSON
-      - name: Generate SBOM (repo, SPDX)
-        uses: anchore/sbom-action@v0
-        with:
-          path: .
-          format: spdx-json
-          output-file: sbom-repo-spdx.json
-          upload-artifact: true
-          dependency-snapshot: false
-
-  sbom-image:
-    name: SBOM for container image (if Dockerfile)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check Dockerfile
-      # produce a boolean output we can use in later steps
-        id: chk
-        run: |
-          if [ -f Dockerfile ]; then
-            echo "has=true" >> $GITHUB_OUTPUT
-          else
-            echo "has=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Set up Docker Buildx
-        if: steps.chk.outputs.has == 'true'
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build image (local only)
-        if: steps.chk.outputs.has == 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: local/syft-scan:latest
-
-      # CycloneDX JSON from image
-      - name: Generate SBOM (image, CycloneDX)
-        if: steps.chk.outputs.has == 'true'
-        uses: anchore/sbom-action@v0
-        with:
-          image: local/syft-scan:latest
-          format: cyclonedx-json
-          output-file: sbom-image-cyclonedx.json
-          upload-artifact: true
-          dependency-snapshot: false
-
-      # SPDX JSON from image
-      - name: Generate SBOM (image, SPDX)
-        if: steps.chk.outputs.has == 'true'
-        uses: anchore/sbom-action@v0
-        with:
-          image: local/syft-scan:latest
-          format: spdx-json
-          output-file: sbom-image-spdx.json
-          upload-artifact: true
-          dependency-snapshot: false
+    build:
+      runs-on: ubuntu-latest
+      steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Anchore SBOM Action
+        uses: anchore/sbom-action@v0.16.0
