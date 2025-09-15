@@ -1,201 +1,95 @@
-name: Security Scans
+# .github/workflows/security.yml
+name: SBOM (Syft only)
 
 on:
   push:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
 
+# Needed if you enable dependency-snapshot below
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: security-${{ github.ref }}
+  group: sbom-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  codeql:
-    name: SAST (CodeQL)
+  sbom-repo:
+    name: SBOM for repository (files)
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [ 'cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby' ]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+      # CycloneDX JSON
+      - name: Generate SBOM (repo, CycloneDX)
+        uses: anchore/sbom-action@v0
         with:
-          languages: ${{ matrix.language }}
+          path: .
+          format: cyclonedx-json
+          output-file: sbom-repo-cyclonedx.json
+          upload-artifact: true
+          # set to true if you want to send to GitHub Dependency Graph
+          dependency-snapshot: true
 
-      # Tries to build for compiled languages; safe to run for others
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
-
-      - name: Analyze
-        uses: github/codeql-action/analyze@v3
+      # SPDX JSON
+      - name: Generate SBOM (repo, SPDX)
+        uses: anchore/sbom-action@v0
         with:
-          category: "/language:${{ matrix.language }}"
+          path: .
+          format: spdx-json
+          output-file: sbom-repo-spdx.json
+          upload-artifact: true
+          dependency-snapshot: false
 
-  trivy-fs:
-    name: SCA & IaC (Trivy filesystem/config)
+  sbom-image:
+    name: SBOM for container image (if Dockerfile)
     runs-on: ubuntu-latest
-    if: ${{ !github.event.pull_request.draft }}
-    permissions:
-      contents: read
-      security-events: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache Trivy DB
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/trivy
-          key: trivy-db-${{ runner.os }}-${{ hashFiles('**/lockfiles-dont-affect-db') }}
-          restore-keys: trivy-db-${{ runner.os }}-
-
-      - name: Trivy filesystem scan (deps + IaC)
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-fs.sarif'
-          ignore-unfixed: true
-          severity: 'CRITICAL,HIGH'
-          vuln-type: 'os,library'
-          security-checks: 'vuln,secret,config,license'
-
-      - name: Upload SARIF (Trivy FS)
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-fs.sarif
-
-  gitleaks:
-    name: Secrets Scan (Gitleaks)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # full history for better detection
-
-      - name: Run Gitleaks
-        uses: zricethezav/gitleaks-action@v2.3.9
-        with:
-          args: detect --source . --report-format sarif --report-path gitleaks.sarif
-
-      - name: Upload SARIF (Gitleaks)
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: gitleaks.sarif
-
-  container-image:
-    name: Container Image Scan (Trivy)
-    runs-on: ubuntu-latest
-    if: ${{ hashFiles('Dockerfile') != '' }}
-    permissions:
-      contents: read
-      security-events: write
-      packages: read
-    steps:
-      - uses: actions/checkout@v4
+      - name: Check Dockerfile
+      # produce a boolean output we can use in later steps
+        id: chk
+        run: |
+          if [ -f Dockerfile ]; then
+            echo "has=true" >> $GITHUB_OUTPUT
+          else
+            echo "has=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Set up Docker Buildx
+        if: steps.chk.outputs.has == 'true'
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (local)
+      - name: Build image (local only)
+        if: steps.chk.outputs.has == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
           load: true
-          tags: local/build:security-scan
+          tags: local/syft-scan:latest
 
-      - name: Cache Trivy DB
-        uses: actions/cache@v4
+      # CycloneDX JSON from image
+      - name: Generate SBOM (image, CycloneDX)
+        if: steps.chk.outputs.has == 'true'
+        uses: anchore/sbom-action@v0
         with:
-          path: ~/.cache/trivy
-          key: trivy-db-${{ runner.os }}-image
-          restore-keys: trivy-db-${{ runner.os }}-
+          image: local/syft-scan:latest
+          format: cyclonedx-json
+          output-file: sbom-image-cyclonedx.json
+          upload-artifact: true
+          dependency-snapshot: false
 
-      - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
+      # SPDX JSON from image
+      - name: Generate SBOM (image, SPDX)
+        if: steps.chk.outputs.has == 'true'
+        uses: anchore/sbom-action@v0
         with:
-          image-ref: 'local/build:security-scan'
-          format: 'sarif'
-          output: 'trivy-image.sarif'
-          ignore-unfixed: true
-          severity: 'CRITICAL,HIGH'
-          vuln-type: 'os,library'
-
-      - name: Upload SARIF (Trivy Image)
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-image.sarif
-
-  language-audits:
-    name: Language-specific Audits
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-
-      # Node.js (npm/yarn/pnpm)
-      - name: Node audit (npm)
-        if: ${{ hashFiles('**/package-lock.json') != '' || hashFiles('**/npm-shrinkwrap.json') != '' }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: 'lts/*'
-      - name: npm ci
-        if: ${{ hashFiles('**/package-lock.json') != '' || hashFiles('**/npm-shrinkwrap.json') != '' }}
-        run: npm ci --ignore-scripts
-      - name: npm audit (fail on high)
-        if: ${{ hashFiles('**/package-lock.json') != '' || hashFiles('**/npm-shrinkwrap.json') != '' }}
-        run: npm audit --audit-level=high || true
-
-      # Python (pip)
-      - name: Python safety check
-        if: ${{ hashFiles('**/requirements.txt') != '' || hashFiles('**/pyproject.toml') != '' }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-      - name: Install pip-tools & safety
-        if: ${{ hashFiles('**/requirements.txt') != '' || hashFiles('**/pyproject.toml') != '' }}
-        run: |
-          python -m pip install --upgrade pip
-          pip install safety
-          pip install -r requirements.txt || true
-      - name: safety check
-        if: ${{ hashFiles('**/requirements.txt') != '' }}
-        run: safety check -r requirements.txt || true
-
-      # Go
-      - name: Go vuln check
-        if: ${{ hashFiles('**/go.mod') != '' }}
-        uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
-      - name: govulncheck
-        if: ${{ hashFiles('**/go.mod') != '' }}
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./... || true
-
-      # .NET
-      - name: .NET audit
-        if: ${{ hashFiles('**/*.csproj') != '' || hashFiles('**/*.sln') != '' }}
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-      - name: dotnet list package --vulnerable
-        if: ${{ hashFiles('**/*.csproj') != '' || hashFiles('**/*.sln') != '' }}
-        run: dotnet list ./ --vulnerable || true
+          image: local/syft-scan:latest
+          format: spdx-json
+          output-file: sbom-image-spdx.json
+          upload-artifact: true
+          dependency-snapshot: false
